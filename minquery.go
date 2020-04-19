@@ -170,9 +170,10 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 	}
 	if mq.min != nil {
 		// min is inclusive, skip the first (which is the previous last)
+
 		cmd = append(cmd,
 			bson.DocElem{Name: "skip", Value: 1},
-			bson.DocElem{Name: "min", Value: mq.min},
+			bson.DocElem{Name: "max", Value: mq.min},
 			bson.DocElem{Name: "hint", Value: mq.hint},
 		)
 	}
