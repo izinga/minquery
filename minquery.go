@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"github.com/izinga/mgo"
+	"github.com/izinga/mgo/bson"
 )
 
 // DefaultCursorCodec is the default CursorCodec value that is used if none

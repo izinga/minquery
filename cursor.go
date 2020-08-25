@@ -5,7 +5,7 @@ package minquery
 import (
 	"encoding/base64"
 
-	"github.com/globalsign/mgo/bson"
+	"github.com/izinga/mgo/bson"
 )
 
 // CursorCodec represents a symmetric pair of functions that can be used to

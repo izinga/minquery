@@ -5,8 +5,8 @@ import (
 	"log"
 	"testing"
 
-	"github.com/globalsign/mgo"
-	"github.com/globalsign/mgo/bson"
+	"github.com/izinga/mgo"
+	"github.com/izinga/mgo/bson"
 	"github.com/icza/mighty"
 )
 

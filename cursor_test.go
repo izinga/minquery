@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/globalsign/mgo/bson"
+	"github.com/izinga/mgo/bson"
 	"github.com/icza/mighty"
 )
 
