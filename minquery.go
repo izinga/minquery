@@ -4,6 +4,7 @@ package minquery
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
@@ -187,7 +188,7 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 			FirstBatch []bson.Raw  `bson:"firstBatch"`
 		} `bson:"cursor"`
 	}
-
+	fmt.Printf("\ncmd %+v\n", cmd)
 	if err = mq.db.Run(cmd, &res); err != nil {
 		return
 	}
