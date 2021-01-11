@@ -174,7 +174,8 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 
 		cmd = append(cmd,
 			bson.DocElem{Name: "skip", Value: 1},
-			bson.DocElem{Name: "max", Value: mq.min},
+			bson.DocElem{Name: "min", Value: mq.min},
+			// bson.DocElem{Name: "max", Value: mq.min},
 			bson.DocElem{Name: "hint", Value: mq.hint},
 		)
 	}
