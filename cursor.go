@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 
 	"github.com/izinga/mgo/bson"
+	mongoDriverBson "go.mongodb.org/mongo-driver/bson"
 )
 
 // CursorCodec represents a symmetric pair of functions that can be used to
@@ -41,5 +42,27 @@ func (cursorCodec) ParseCursor(c string) (cursorData bson.D, err error) {
 	}
 
 	err = bson.Unmarshal(data, &cursorData)
+	return
+}
+
+type CursorCodecMongo interface {
+	CreateCursorMongo(cursorData mongoDriverBson.D) (string, error)
+	ParseCursorMongo(c string) (cursorData mongoDriverBson.D, err error)
+}
+
+type cursorCodecMongo struct{}
+
+func (cursorCodecMongo) CreateCursorMongo(cursorData mongoDriverBson.D) (string, error) {
+	data, err := mongoDriverBson.Marshal(cursorData)
+	return base64.RawURLEncoding.EncodeToString(data), err
+}
+
+func (cursorCodecMongo) ParseCursorMongo(c string) (cursorData mongoDriverBson.D, err error) {
+	var data []byte
+	if data, err = base64.RawURLEncoding.DecodeString(c); err != nil {
+		return
+	}
+
+	err = mongoDriverBson.Unmarshal(data, &cursorData)
 	return
 }

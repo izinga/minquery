@@ -3,16 +3,22 @@
 package minquery
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/izinga/mgo"
 	"github.com/izinga/mgo/bson"
+	mongoDriverBson "go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
 )
 
 // DefaultCursorCodec is the default CursorCodec value that is used if none
 // is specified. The default implementation produces web-safe cursor strings.
 var DefaultCursorCodec cursorCodec
+var DefaultCursorCodecMongo cursorCodecMongo
+
+var UseMongoDriver = false
 
 // MinQuery is an mgo-like Query that supports cursors to continue listing documents
 // where we left off. If a cursor is set, it specifies the last index entry
@@ -53,7 +59,9 @@ var errTestValue = errors.New("Intentional testing error")
 // minQuery is the MinQuery implementation.
 type minQuery struct {
 	// db is the mgo Database to use
-	db   *mgo.Database
+	db      *mgo.Database
+	dbMongo *mongo.Database
+
 	hint map[string]int
 	// Name of the collection
 	coll string
@@ -63,6 +71,8 @@ type minQuery struct {
 
 	// sort document
 	sort bson.D
+
+	sortMongo mongoDriverBson.D
 
 	// projection document (to retrieve only selected fields)
 	projection interface{}
@@ -76,11 +86,15 @@ type minQuery struct {
 	// cursorCodec to be used to parse and to create cursors
 	cursorCodec CursorCodec
 
+	cursorCodecMongo cursorCodecMongo
+
 	// cursorErr contains an error if an invalid cursor is supplied
 	cursorErr error
 
 	// min specifies the last index entry
 	min bson.D
+
+	minMongo mongoDriverBson.D
 
 	// testError is a helper field to aid testing errors to reach 100% coverage.
 	// May only be changed from tests! Zero value means normal operation.
@@ -89,29 +103,59 @@ type minQuery struct {
 
 // New returns a new MinQuery.
 func New(db *mgo.Database, coll string, query interface{}, hint map[string]int) MinQuery {
-	return &minQuery{
-		db:          db,
-		coll:        coll,
-		filter:      query,
-		hint:        hint,
-		cursorCodec: DefaultCursorCodec,
+	if db.Session.GetDriverDatabase() != nil {
+		UseMongoDriver = true
+		// fmt.Println("using mongo driver")
+		return &minQuery{
+			db:               db,
+			dbMongo:          db.Session.GetDriverDatabase(),
+			coll:             coll,
+			filter:           query,
+			hint:             hint,
+			cursorCodec:      DefaultCursorCodec,
+			cursorCodecMongo: DefaultCursorCodecMongo,
+		}
+	} else {
+		return &minQuery{
+			db:          db,
+			coll:        coll,
+			filter:      query,
+			hint:        hint,
+			cursorCodec: DefaultCursorCodec,
+		}
 	}
 }
 
 // Sort implements MinQuery.Sort().
 func (mq *minQuery) Sort(fields ...string) MinQuery {
-	mq.sort = make(bson.D, 0, len(fields))
-	for _, field := range fields {
-		if field == "" {
-			continue
+	if UseMongoDriver {
+		mq.sortMongo = make(mongoDriverBson.D, 0, len(fields))
+		for _, field := range fields {
+			if field == "" {
+				continue
+			}
+			n := 1
+			if field[0] == '+' {
+				field = field[1:]
+			} else if field[0] == '-' {
+				n, field = -1, field[1:]
+			}
+			mq.sortMongo = append(mq.sortMongo, mongoDriverBson.E{Key: field, Value: n})
 		}
-		n := 1
-		if field[0] == '+' {
-			field = field[1:]
-		} else if field[0] == '-' {
-			n, field = -1, field[1:]
+	} else {
+		mq.sort = make(bson.D, 0, len(fields))
+		for _, field := range fields {
+			if field == "" {
+				continue
+			}
+			n := 1
+			if field[0] == '+' {
+				field = field[1:]
+			} else if field[0] == '-' {
+				n, field = -1, field[1:]
+			}
+			mq.sort = append(mq.sort, bson.DocElem{Name: field, Value: n})
 		}
-		mq.sort = append(mq.sort, bson.DocElem{Name: field, Value: n})
 	}
 	return mq
 }
@@ -130,13 +174,23 @@ func (mq *minQuery) Limit(n int) MinQuery {
 
 // Cursor implements MinQuery.Cursor().
 func (mq *minQuery) Cursor(c string) MinQuery {
-	mq.cursor = c
-	if c != "" {
-		mq.min, mq.cursorErr = mq.cursorCodec.ParseCursor(c)
+	if UseMongoDriver {
+		mq.cursor = c
+		if c != "" {
+			mq.minMongo, mq.cursorErr = mq.cursorCodecMongo.ParseCursorMongo(c)
+		} else {
+			mq.minMongo, mq.cursorErr = nil, nil
+		}
+		return mq
 	} else {
-		mq.min, mq.cursorErr = nil, nil
+		mq.cursor = c
+		if c != "" {
+			mq.min, mq.cursorErr = mq.cursorCodec.ParseCursor(c)
+		} else {
+			mq.min, mq.cursorErr = nil, nil
+		}
+		return mq
 	}
-	return mq
 }
 
 // CursorCodec implements MinQuery.CursorCodec().
@@ -147,83 +201,141 @@ func (mq *minQuery) CursorCodec(cc CursorCodec) MinQuery {
 
 // All implements MinQuery.All().
 func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor string, err error) {
-	if mq.cursorErr != nil {
-		return "", mq.cursorErr
-	}
+	if UseMongoDriver {
+		db := mq.dbMongo
 
-	// Mongodb "find" reference:
-	// https://docs.mongodb.com/manual/reference/command/find/
+		if mq.cursorErr != nil {
+			return "", mq.cursorErr
+		}
 
-	cmd := bson.D{
-		{Name: "find", Value: mq.coll},
-		{Name: "limit", Value: mq.limit},
-		{Name: "batchSize", Value: mq.limit},
-		{Name: "singleBatch", Value: true},
-	}
-	if mq.filter != nil {
-		cmd = append(cmd, bson.DocElem{Name: "filter", Value: mq.filter})
-	}
-	if mq.sort != nil {
-		cmd = append(cmd, bson.DocElem{Name: "sort", Value: mq.sort})
-	}
-	if mq.projection != nil {
-		cmd = append(cmd, bson.DocElem{Name: "projection", Value: mq.projection})
-	}
-	if mq.min != nil {
-		// min is inclusive, skip the first (which is the previous last)
+		cmd := mongoDriverBson.D{
+			{Key: "find", Value: mq.coll},
+			{Key: "limit", Value: mq.limit},
+			{Key: "batchSize", Value: mq.limit},
+			{Key: "singleBatch", Value: true},
+		}
+		if mq.filter != nil {
+			cmd = append(cmd, mongoDriverBson.E{Key: "filter", Value: mq.filter})
+		}
+		if mq.sortMongo != nil {
+			cmd = append(cmd, mongoDriverBson.E{Key: "sort", Value: mq.sortMongo})
+		}
+		if mq.projection != nil {
+			cmd = append(cmd, mongoDriverBson.E{Key: "projection", Value: mq.projection})
+		}
+		if mq.minMongo != nil {
+			cmd = append(cmd,
+				mongoDriverBson.E{Key: "skip", Value: 0},
+				mongoDriverBson.E{Key: "max", Value: mq.minMongo},
+				mongoDriverBson.E{Key: "hint", Value: mq.hint},
+			)
+		}
 
-		cmd = append(cmd,
-			bson.DocElem{Name: "skip", Value: 0},
-			// bson.DocElem{Name: "min", Value: mq.min},
-			bson.DocElem{Name: "max", Value: mq.min},
-			bson.DocElem{Name: "hint", Value: mq.hint},
-		)
-	}
+		fmt.Printf("\ncmd %+v\n", cmd)
+		mcur, merr := db.RunCommandCursor(context.Background(), cmd)
+		if merr != nil {
+			return "", merr
+		}
 
-	var res struct {
-		OK       int `bson:"ok"`
-		WaitedMS int `bson:"waitedMS"`
-		Cursor   struct {
-			ID         interface{} `bson:"id"`
-			NS         string      `bson:"ns"`
-			FirstBatch []bson.Raw  `bson:"firstBatch"`
-		} `bson:"cursor"`
-	}
-	fmt.Printf("\ncmd %+v\n", cmd)
-	if err = mq.db.Run(cmd, &res); err != nil {
-		return
-	}
+		cursor = mq.cursor
 
-	firstBatch := res.Cursor.FirstBatch
-	if len(firstBatch) > 0 {
-		if len(cursorFields) > 0 {
-			// create cursor from the last document
-			var doc bson.M
-			err = firstBatch[len(firstBatch)-1].Unmarshal(&doc)
-			if mq.testError {
-				err = errTestValue
-			}
-			if err != nil {
-				return
-			}
-			cursorData := make(bson.D, len(cursorFields))
+		var lastRaw mongoDriverBson.Raw
+		for mcur.Next(context.TODO()) {
+			lastRaw = mcur.Current
+		}
+
+		if len(lastRaw) > 0 {
+			cursorData := make(mongoDriverBson.D, len(cursorFields))
 			for i, cf := range cursorFields {
-				cursorData[i] = bson.DocElem{Name: cf, Value: doc[cf]}
+				cursorData[i] = mongoDriverBson.E{Key: cf, Value: lastRaw.Lookup(cf)}
 			}
-			cursor, err = mq.cursorCodec.CreateCursor(cursorData)
+			cursor, err = mq.cursorCodecMongo.CreateCursorMongo(cursorData)
 			if err != nil {
 				return
 			}
 		}
+
+		err = mcur.All(context.Background(), result)
+
 	} else {
-		// No more results. Use the same cursor that was used for the query.
-		// It's possible that the last doc was returned previously, and there
-		// are no more.
-		cursor = mq.cursor
+		if mq.cursorErr != nil {
+			return "", mq.cursorErr
+		}
+
+		// Mongodb "find" reference:
+		// https://docs.mongodb.com/manual/reference/command/find/
+
+		cmd := bson.D{
+			{Name: "find", Value: mq.coll},
+			{Name: "limit", Value: mq.limit},
+			{Name: "batchSize", Value: mq.limit},
+			{Name: "singleBatch", Value: true},
+		}
+		if mq.filter != nil {
+			cmd = append(cmd, bson.DocElem{Name: "filter", Value: mq.filter})
+		}
+		if mq.sort != nil {
+			cmd = append(cmd, bson.DocElem{Name: "sort", Value: mq.sort})
+		}
+		if mq.projection != nil {
+			cmd = append(cmd, bson.DocElem{Name: "projection", Value: mq.projection})
+		}
+		if mq.min != nil {
+			// min is inclusive, skip the first (which is the previous last)
+
+			cmd = append(cmd,
+				bson.DocElem{Name: "skip", Value: 0},
+				// bson.DocElem{Name: "min", Value: mq.min},
+				bson.DocElem{Name: "max", Value: mq.min},
+				bson.DocElem{Name: "hint", Value: mq.hint},
+			)
+		}
+
+		var res struct {
+			OK       int `bson:"ok"`
+			WaitedMS int `bson:"waitedMS"`
+			Cursor   struct {
+				ID         interface{} `bson:"id"`
+				NS         string      `bson:"ns"`
+				FirstBatch []bson.Raw  `bson:"firstBatch"`
+			} `bson:"cursor"`
+		}
+		fmt.Printf("\ncmd %+v\n", cmd)
+		if err = mq.db.Run(cmd, &res); err != nil {
+			return
+		}
+
+		firstBatch := res.Cursor.FirstBatch
+		if len(firstBatch) > 0 {
+			if len(cursorFields) > 0 {
+				// create cursor from the last document
+				var doc bson.M
+				err = firstBatch[len(firstBatch)-1].Unmarshal(&doc)
+				if mq.testError {
+					err = errTestValue
+				}
+				if err != nil {
+					return
+				}
+				cursorData := make(bson.D, len(cursorFields))
+				for i, cf := range cursorFields {
+					cursorData[i] = bson.DocElem{Name: cf, Value: doc[cf]}
+				}
+				cursor, err = mq.cursorCodec.CreateCursor(cursorData)
+				if err != nil {
+					return
+				}
+			}
+		} else {
+			// No more results. Use the same cursor that was used for the query.
+			// It's possible that the last doc was returned previously, and there
+			// are no more.
+			cursor = mq.cursor
+		}
+
+		// Unmarshal results (FirstBatch) into the user-provided value:
+		err = mq.db.C(mq.coll).NewIter(nil, firstBatch, 0, nil).All(result)
+
 	}
-
-	// Unmarshal results (FirstBatch) into the user-provided value:
-	err = mq.db.C(mq.coll).NewIter(nil, firstBatch, 0, nil).All(result)
-
 	return
 }
