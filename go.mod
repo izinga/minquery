@@ -4,7 +4,7 @@ go 1.22.3
 
 require (
 	github.com/icza/mighty v0.0.0-20230330133200-c4b03a294ed8
-	github.com/izinga/mgo v1.0.14
+	github.com/izinga/mgo v1.0.15
 	go.mongodb.org/mongo-driver v1.16.0
 )
 
