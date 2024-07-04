@@ -1,4 +1,4 @@
-module minquery
+module github.com/izinga/minquery
 
 go 1.22.3
 
