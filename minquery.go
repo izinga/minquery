@@ -3,9 +3,7 @@
 package minquery
 
 import (
-	"context"
 	"errors"
-	"fmt"
 
 	"github.com/izinga/mgo"
 	"github.com/izinga/mgo/bson"
@@ -231,8 +229,9 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 			)
 		}
 
-		fmt.Printf("\ncmd %+v\n", cmd)
-		mcur, merr := db.RunCommandCursor(context.Background(), cmd)
+		ctx, cancel := opContext()
+		defer cancel()
+		mcur, merr := db.RunCommandCursor(ctx, cmd)
 		if merr != nil {
 			return "", merr
 		}
@@ -240,7 +239,7 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 		cursor = mq.cursor
 
 		var lastRaw mongoDriverBson.Raw
-		for mcur.Next(context.TODO()) {
+		for mcur.Next(ctx) {
 			lastRaw = mcur.Current
 		}
 
@@ -255,7 +254,7 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 			}
 		}
 
-		err = mcur.All(context.Background(), result)
+		err = mcur.All(ctx, result)
 
 	} else {
 		if mq.cursorErr != nil {
@@ -300,7 +299,6 @@ func (mq *minQuery) All(result interface{}, cursorFields ...string) (cursor stri
 				FirstBatch []bson.Raw  `bson:"firstBatch"`
 			} `bson:"cursor"`
 		}
-		fmt.Printf("\ncmd %+v\n", cmd)
 		if err = mq.db.Run(cmd, &res); err != nil {
 			return
 		}
